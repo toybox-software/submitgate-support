@@ -115,10 +115,10 @@ Please **do not** open public issues for:
 - vulnerabilities that allow bypassing licensing
 - anything that could expose private app artifacts or secrets
 
-Instead, email: **security@YOUR_DOMAIN.com**  
+Instead, email: **security@submit-gate.com**  
 (Replace this with your real address.)
 
-If you don’t have a security inbox yet, use: **support@YOUR_DOMAIN.com** and include “SECURITY” in the subject.
+If you don’t have a security inbox yet, use: **support@submit-gate.com** and include “SECURITY” in the subject.
 
 ---
 
