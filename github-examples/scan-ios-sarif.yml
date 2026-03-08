@@ -1,0 +1,131 @@
+name: submitgate SARIF (ios)
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Placeholders to replace:
+#   <ARTIFACT_PATH> - path to your iOS artifact (.ipa, .xcarchive, or .app)
+#   <VERSION>       - SubmitGate version to pin (recommended for deterministic CI)
+#
+# Tip: Commit a submitgate.config.json to set scan defaults (policy path, format, etc.).
+# Run `submitgate init` to scaffold one. CI-specific overrides (--format sarif, --ci) are
+# passed as flags below; other defaults come from submitgate.config.json automatically.
+#
+# Baseline path (committed to repo):
+#   .submitgate/baseline.ios.json
+#
+# With --baseline, CI fails only on NEW findings (not in baseline).
+# Exit codes: 0 = no new findings, 1 = new findings at threshold,
+#             2 = CLI/IO error (including missing baseline),
+#             4 = policy schema error (if --policy used), 5 = invalid baseline,
+#             6 = license error
+
+jobs:
+  scan:
+    # iOS builds often require macOS; if you're only scanning an already-built artifact,
+    # you may still use ubuntu-latest if the artifact is available and supported by your pipeline.
+    runs-on: macos-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # TODO: build or download your iOS artifact here
+      # Ensure your iOS artifact exists at <ARTIFACT_PATH> (.ipa, .xcarchive, or .app)
+      #
+      # Tip: Ensure your app includes a PrivacyInfo.xcprivacy Privacy Manifest.
+      # Run `submitgate init --ios-privacy-manifest` to scaffold a starter template.
+      #
+      # Note: iOS artifact scanning (.ipa, .xcarchive, .app) supports both XML and binary plists for improved fidelity.
+
+      - name: Write submitgate policy (optional)
+        run: |
+          cat > submitgate.policy.json << 'JSON'
+          { "schemaVersion": 1 }
+          JSON
+          # Policy example (conditional rules with when clauses):
+          # {
+          #   "schemaVersion": 1,
+          #   "rules": [
+          #     { "ruleId": "IOS_PRIVACY_MANIFEST", "when": { "baselineState": "unchanged" }, "severity": "INFO" },
+          #     { "ruleId": "IOS_PRIVACY_MANIFEST", "when": { "baselineState": "new" }, "severity": "BLOCKER" }
+          #   ]
+          # }
+          #
+          # Policy with pathMatches (match findings by evidence path):
+          # {
+          #   "schemaVersion": 1,
+          #   "rules": [
+          #     { "ruleId": "IOS_PRIVACY_MANIFEST", "when": { "pathMatches": ["PrivacyInfo.xcprivacy"] }, "severity": "BLOCKER" },
+          #     { "ruleId": "IOS_DEBUGGABLE_BUILD", "when": { "pathMatches": ["**/*.entitlements"] }, "severity": "WARNING" }
+          #   ]
+          # }
+          #
+          # Required Reason API policy (ITMS-91053 / ITMS-91055):
+          # {
+          #   "schemaVersion": 1,
+          #   "rules": [
+          #     { "ruleId": "IOS_REQUIRED_REASON_APIS_MISSING_DECLARATION", "severity": "BLOCKER" },
+          #     { "ruleId": "IOS_REQUIRED_REASON_APIS_INVALID_REASONS", "severity": "BLOCKER" }
+          #   ]
+          # }
+          # ITMS-91053 findings include copy/paste remediation snippets in the output.
+          # ITMS-91055/91106 findings identify invalid reason codes and their categories.
+          # Validates reason codes in both the main app and embedded framework manifests.
+          #
+          # App Tracking Transparency policy:
+          # {
+          #   "schemaVersion": 1,
+          #   "rules": [
+          #     { "ruleId": "IOS_ATT_USAGE_DESCRIPTION_MISSING", "severity": "BLOCKER" },
+          #     { "ruleId": "IOS_ATT_IDFA_USAGE_DETECTED", "severity": "INFO" }
+          #   ]
+          # }
+
+      # -----------------------------------------------------------------------
+      # To create/update the baseline (run manually or on main when accepting
+      # existing findings):
+      #
+      #   npx -y submitgate@<VERSION> baseline create ios <ARTIFACT_PATH> \
+      #     --out .submitgate/baseline.ios.json \
+      #     --policy ./submitgate.policy.json
+      #
+      # Then commit .submitgate/baseline.ios.json to your repository.
+      # -----------------------------------------------------------------------
+
+      - name: Run submitgate (SARIF, baseline comparison)
+        id: submitgate
+        continue-on-error: true
+        env:
+          # Create SUBMITGATE_LICENSE in your repo/org secrets
+          SUBMITGATE_LICENSE: ${{ secrets.SUBMITGATE_LICENSE }}
+        run: |
+          # Pin SubmitGate version for deterministic CI (recommended)
+          npx -y submitgate@<VERSION> scan ios <ARTIFACT_PATH> \
+            --format sarif \
+            --ci --ci-provider github \
+            --baseline .submitgate/baseline.ios.json \
+            > submitgate.sarif
+          # Policy path is loaded from submitgate.config.json (or pass --policy explicitly)
+          # Add --baseline-mode all to show all findings with baselineState annotations
+          # Exit code is still based on new findings only (for regression gating)
+          #
+          # Scan profiles: --scan-profile default|deep|fast
+          # Custom scan caps: --scan-caps ./submitgate.scan-caps.json
+          #
+          # Debug: Add --explain-policy to see policy evaluation details on stderr:
+          #   --explain-policy 2> policy-explain.log
+
+      - name: Upload SARIF to GitHub Code Scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: submitgate.sarif
+
+      # Fails if submitgate exited non-zero (new findings at threshold, or error)
+      - name: Fail job if submitgate failed
+        if: steps.submitgate.outcome != 'success'
+        run: exit 1

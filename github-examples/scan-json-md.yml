@@ -1,0 +1,111 @@
+name: submitgate (json + md)
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Placeholders to replace:
+#   <PLATFORM>      - ios or android
+#   <ARTIFACT_PATH> - path to your app artifact
+#   <VERSION>       - SubmitGate version to pin (recommended for deterministic CI)
+#
+# Tip: Commit a submitgate.config.json to set scan defaults (policy path, format, etc.).
+# Run `submitgate init` to scaffold one. CI-specific overrides (--format both, --ci) are
+# passed as flags below; other defaults come from submitgate.config.json automatically.
+#
+# Baseline path (committed to repo):
+#   .submitgate/baseline.<PLATFORM>.json
+#
+# With --baseline, CI fails only on NEW findings (not in baseline).
+# Exit codes: 0 = no new findings, 1 = new findings at threshold,
+#             2 = CLI/IO error (including missing baseline),
+#             4 = policy schema error (if --policy used), 5 = invalid baseline,
+#             6 = license error
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      # TODO:
+      # Build or download your app artifact here.
+      #
+      # Examples:
+      # - Android: gradle build, Flutter build, or download from previous job
+      # - iOS: download prebuilt .ipa/.xcarchive artifact
+      #
+      # Ensure the artifact exists at <ARTIFACT_PATH> before scanning.
+      #
+      # Note (iOS only, when <PLATFORM> is set to ios): iOS artifact scanning (e.g., .ipa, .xcarchive, .app)
+      # supports both XML and binary plists for improved fidelity.
+
+      - name: Write submitgate policy (optional)
+        run: |
+          cat > submitgate.policy.json << 'JSON'
+          { "schemaVersion": 1 }
+          JSON
+          # Policy example (conditional rules with when clauses):
+          # {
+          #   "schemaVersion": 1,
+          #   "rules": [
+          #     { "ruleId": "IOS_PRIVACY_MANIFEST", "when": { "baselineState": "unchanged" }, "severity": "INFO" },
+          #     { "ruleId": "IOS_PRIVACY_MANIFEST", "when": { "baselineState": "new" }, "severity": "BLOCKER" }
+          #   ]
+          # }
+          #
+          # Policy with pathMatches (match findings by evidence path):
+          # {
+          #   "schemaVersion": 1,
+          #   "rules": [
+          #     { "ruleId": "IOS_PRIVACY_MANIFEST", "when": { "pathMatches": ["PrivacyInfo.xcprivacy"] }, "severity": "BLOCKER" },
+          #     { "ruleId": "ANDROID_DEBUGGABLE_BUILD", "when": { "pathMatches": ["AndroidManifest.xml"] }, "severity": "WARNING" }
+          #   ]
+          # }
+
+      # -----------------------------------------------------------------------
+      # To create/update the baseline (run manually or on main when accepting
+      # existing findings):
+      #
+      #   npx -y submitgate@<VERSION> baseline create <PLATFORM> <ARTIFACT_PATH> \
+      #     --out .submitgate/baseline.<PLATFORM>.json \
+      #     --policy ./submitgate.policy.json
+      #
+      # Then commit .submitgate/baseline.<PLATFORM>.json to your repository.
+      # -----------------------------------------------------------------------
+
+      - name: Run submitgate (JSON + Markdown, baseline comparison)
+        env:
+          # Create SUBMITGATE_LICENSE in your repo/org secrets
+          SUBMITGATE_LICENSE: ${{ secrets.SUBMITGATE_LICENSE }}
+        run: |
+          # Pin SubmitGate version for deterministic CI (recommended)
+          npx -y submitgate@<VERSION> scan <PLATFORM> <ARTIFACT_PATH> \
+            --format both \
+            --fail-on BLOCKER \
+            --ci --ci-provider github \
+            --baseline .submitgate/baseline.<PLATFORM>.json
+          # Policy path is loaded from submitgate.config.json (or pass --policy explicitly)
+          # Add --baseline-mode all to show all findings with [NEW] prefix in markdown
+          # Exit code is still based on new findings only (for regression gating)
+          #
+          # Scan profiles: --scan-profile default|deep|fast
+          # Custom scan caps: --scan-caps ./submitgate.scan-caps.json
+          #
+          # Debug: Add --explain-policy to see policy evaluation details on stderr:
+          #   --explain-policy 2> policy-explain.log
+          #
+          # iOS Required Reason API (ITMS-91053 / ITMS-91055) findings include
+          # remediation snippets and invalid reason-code details in the output.
+          #
+          # Tip: For iOS apps, ensure a PrivacyInfo.xcprivacy Privacy Manifest is included.
+          # Run `submitgate init --ios-privacy-manifest` to scaffold a starter template.
+          #
+          # Android only — sidecar parity checks (auto-discovery or explicit flags):
+          #   --play-declarations ./play-declarations.json   (Android only)
+          #   --permissions-declarations ./permissions-declarations.json   (Android only)
+          # AD_ID parity is checked both ways: BLOCKER if permission present but
+          # sidecar says false; WARNING if sidecar says true but permission absent.

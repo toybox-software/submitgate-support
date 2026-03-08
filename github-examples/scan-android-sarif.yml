@@ -1,0 +1,117 @@
+name: submitgate SARIF (android)
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Placeholders to replace:
+#   <ARTIFACT_PATH> - path to your Android artifact (.apk or .aab)
+#   <VERSION>       - SubmitGate version to pin (recommended for deterministic CI)
+#
+# Tip: Commit a submitgate.config.json to set scan defaults (policy path, format, etc.).
+# Run `submitgate init` to scaffold one. CI-specific overrides (--format sarif, --ci) are
+# passed as flags below; other defaults come from submitgate.config.json automatically.
+#
+# Baseline path (committed to repo):
+#   .submitgate/baseline.android.json
+#
+# With --baseline, CI fails only on NEW findings (not in baseline).
+# Exit codes: 0 = no new findings, 1 = new findings at threshold,
+#             2 = CLI/IO error (including missing baseline),
+#             4 = policy schema error (if --policy used), 5 = invalid baseline,
+#             6 = license error
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # TODO: build or download your Android artifact here
+      # Ensure your Android artifact exists at <ARTIFACT_PATH> (.apk or .aab)
+
+      - name: Write submitgate policy (optional)
+        run: |
+          cat > submitgate.policy.json << 'JSON'
+          { "schemaVersion": 1 }
+          JSON
+          # Policy with targetSdkMin config:
+          # {
+          #   "schemaVersion": 1,
+          #   "config": { "android": { "targetSdkMin": 35 } },
+          #   "rules": [
+          #     { "ruleId": "ANDROID_DEBUGGABLE_BUILD", "when": { "baselineState": "unchanged" }, "severity": "INFO" },
+          #     { "ruleId": "ANDROID_DEBUGGABLE_BUILD", "when": { "baselineState": "new" }, "severity": "BLOCKER" }
+          #   ]
+          # }
+          # Update targetSdkMin as Play requirements change.
+          #
+          # Policy with pathMatches (match findings by evidence path):
+          # {
+          #   "schemaVersion": 1,
+          #   "rules": [
+          #     { "ruleId": "ANDROID_DEBUGGABLE_BUILD", "when": { "pathMatches": ["AndroidManifest.xml"] }, "severity": "WARNING" },
+          #     { "ruleId": "ANDROID_USES_CLEARTEXT_TRAFFIC", "when": { "pathMatches": ["AndroidManifest.xml"] }, "severity": "INFO" },
+          #     { "ruleId": "ANDROID_NETWORK_CLEARTEXT_ALLOWED", "severity": "BLOCKER" }
+          #   ]
+          # }
+
+      # -----------------------------------------------------------------------
+      # To create/update the baseline (run manually or on main when accepting
+      # existing findings):
+      #
+      #   npx -y submitgate@<VERSION> baseline create android <ARTIFACT_PATH> \
+      #     --out .submitgate/baseline.android.json \
+      #     --policy ./submitgate.policy.json
+      #
+      # Then commit .submitgate/baseline.android.json to your repository.
+      # -----------------------------------------------------------------------
+
+      - name: Run submitgate (SARIF, baseline comparison)
+        id: submitgate
+        continue-on-error: true
+        env:
+          # Create SUBMITGATE_LICENSE in your repo/org secrets
+          SUBMITGATE_LICENSE: ${{ secrets.SUBMITGATE_LICENSE }}
+        run: |
+          # Pin SubmitGate version for deterministic CI (recommended)
+          npx -y submitgate@<VERSION> scan android <ARTIFACT_PATH> \
+            --format sarif \
+            --ci --ci-provider github \
+            --baseline .submitgate/baseline.android.json \
+            > submitgate.sarif
+          # Policy path is loaded from submitgate.config.json (or pass --policy explicitly)
+          # Add --baseline-mode all to show all findings with baselineState annotations
+          # Exit code is still based on new findings only (for regression gating)
+          #
+          # Scan profiles: --scan-profile default|deep|fast
+          # Custom scan caps: --scan-caps ./submitgate.scan-caps.json
+          #
+          # Debug: Add --explain-policy to see policy evaluation details on stderr:
+          #   --explain-policy 2> policy-explain.log
+          #
+          # Play declarations parity check (AD_ID vs Play Console):
+          #   --play-declarations ./play-declarations.json
+          # Or place play-declarations.json next to the artifact for auto-discovery.
+          # Parity is checked both ways: BLOCKER if AD_ID permission present but
+          # sidecar says false; WARNING if sidecar says true but permission absent.
+          #
+          # Restricted permissions parity check:
+          #   --permissions-declarations ./permissions-declarations.json
+          # Or place permissions-declarations.json next to the artifact for auto-discovery.
+          #
+
+      - name: Upload SARIF to GitHub Code Scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: submitgate.sarif
+
+      # Fails if submitgate exited non-zero (new findings at threshold, or error)
+      - name: Fail job if submitgate failed
+        if: steps.submitgate.outcome != 'success'
+        run: exit 1

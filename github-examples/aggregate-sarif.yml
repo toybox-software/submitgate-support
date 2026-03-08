@@ -1,0 +1,101 @@
+# SubmitGate Aggregate — Multi-Artifact SARIF Upload
+#
+# This workflow scans multiple app artifacts (iOS + Android), aggregates
+# the results into a single SARIF report, and uploads it to GitHub Code
+# Scanning.
+#
+# IMPORTANT: Replace the placeholders below with your actual values.
+# These will depend on your build system and CI layout.
+#
+# Placeholders to replace:
+#   <IOS_ARTIFACT_PATH>     - path to your iOS artifact (.ipa, .xcarchive, or .app)
+#   <ANDROID_ARTIFACT_PATH> - path to your Android artifact (.apk or .aab)
+#   <VERSION>               - SubmitGate version to pin (recommended for deterministic CI)
+#
+# Tip: Commit a submitgate.config.json to set scan defaults (policy path, format, etc.).
+# Run `submitgate init` to scaffold one.
+#
+# For single-artifact workflows, see:
+#   - scan-ios-sarif.yml
+#   - scan-android-sarif.yml
+
+name: SubmitGate Aggregate
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  scan-and-aggregate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Build your artifacts here ──────────────────────────────
+      # Add your iOS/Android build steps that produce .xcarchive,
+      # .ipa, .apk, or .aab files.
+      #
+      # Tip: For iOS apps, ensure a PrivacyInfo.xcprivacy Privacy Manifest is included.
+      # Run `submitgate init --ios-privacy-manifest` to scaffold a starter template.
+      #
+      # Note: iOS artifact scanning (e.g., .ipa, .xcarchive) supports both XML and binary plists for improved fidelity.
+
+      # ── Scan iOS artifact ──────────────────────────────────────
+      # Each scan writes report.json to its --out-dir. Use separate
+      # subdirectories so outputs don't overwrite each other.
+      - name: Scan iOS artifact
+        id: scan-ios
+        continue-on-error: true
+        env:
+          # Create SUBMITGATE_LICENSE in your repo/org secrets
+          SUBMITGATE_LICENSE: ${{ secrets.SUBMITGATE_LICENSE }}
+        run: |
+          # Pin SubmitGate version for deterministic CI (recommended)
+          npx -y submitgate@<VERSION> scan ios <IOS_ARTIFACT_PATH> \
+            --format json \
+            --out-dir scan-results/ios \
+            --ci
+
+      # ── Scan Android artifact ──────────────────────────────────
+      - name: Scan Android artifact
+        id: scan-android
+        continue-on-error: true
+        env:
+          SUBMITGATE_LICENSE: ${{ secrets.SUBMITGATE_LICENSE }}
+        run: |
+          # Pin SubmitGate version for deterministic CI (recommended)
+          npx -y submitgate@<VERSION> scan android <ANDROID_ARTIFACT_PATH> \
+            --format json \
+            --out-dir scan-results/android \
+            --ci
+
+      # ── Aggregate reports ──────────────────────────────────────
+      # Combines all JSON reports into a single SARIF file.
+      # With --out-dir, SARIF is written directly to a file
+      # (no stdout redirection needed).
+      - name: Aggregate reports
+        id: aggregate
+        continue-on-error: true
+        env:
+          SUBMITGATE_LICENSE: ${{ secrets.SUBMITGATE_LICENSE }}
+        run: |
+          npx -y submitgate@<VERSION> aggregate scan-results/ios scan-results/android \
+            --format sarif \
+            --out-dir scan-results \
+            --fail-on BLOCKER
+
+      # ── Upload SARIF to GitHub Code Scanning ───────────────────
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: scan-results/aggregate-report.sarif
+
+      # ── Fail the job if aggregate found blocking issues ────────
+      - name: Fail if aggregate found issues
+        if: steps.aggregate.outcome == 'failure'
+        run: exit 1
